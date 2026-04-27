@@ -5,6 +5,8 @@ Shader "Custom/URP/URPBasic"
         _BaseColor ("主颜色", Color) = (1, 1, 1, 1)
         _SpecColor ("高光颜色", Color) = (1, 1, 1, 1)
         _Shininess ("高光指数", Range(1, 128)) = 32
+        _RimColor ("边缘光颜色", Color) = (1, 1, 1, 1)
+        _RimPower ("边缘光强度", Range(0.1, 8))  = 2
     }
 
     SubShader
@@ -66,6 +68,8 @@ Shader "Custom/URP/URPBasic"
                 float4 _BaseColor;
                 float4 _SpecColor;
                 float _Shininess;
+                float4 _RimColor;
+                float _RimPower;
             CBUFFER_END
 
             Varyings vert (Attributes v)
@@ -112,13 +116,26 @@ Shader "Custom/URP/URPBasic"
 
                 float3 specular = _SpecColor.rgb * lightColor * spec;
 
+                // ==== 边缘光 ====
+                // 边缘光公式：边缘光强度 = (1 - dot(N, V)) ^ _RimPower
+                // 最终颜色 = 边缘光颜色 * 边缘光强度
+                float rim = pow((1.0 - saturate(dot(N, V))), _RimPower);
+                float3 rimColor = _RimColor.rgb * rim;
+
+                // ==== 边缘光mask ====
+                // 让边缘光只在暗面出现
+                // 暗面权重 = 1 - max(0, N * L)
+                // 最终颜色 = rimColor * 暗面权重
+                float darkMask = 1 - NdotL;
+                rimColor = rimColor * darkMask;
+
                 // 计算环境光
                 // SH：是Spherical Harmonics（球谐函数）的缩写。可以把球面上的任意函数，用一组低频的基函数来近似表示。
                 // SampleSH(N) 就是去查询：“在我的场景里，从法线 N 这个方向射来的环境光是什么颜色？
                 float3 ambient = SampleSH(N);
 
                 // 颜色合并
-                float3 finalColor = diffuse + specular + ambient * _BaseColor.rgb;
+                float3 finalColor = diffuse + specular + ambient * _BaseColor.rgb + rimColor;
 
                 return float4(finalColor, 1.0);
             }
