@@ -38,6 +38,11 @@ Shader "Custom/URP/URPBasic"
             #pragma vertex vert
             #pragma fragment frag
 
+            // 阴影接收编译宏
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS // 要不要让物体的影子落到其他东西上？
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE // 远处的影子要不要变模糊一点来节省性能？
+            #pragma multi_compile _ _SHADOWS_SOFT // 影子的边缘是硬的还是软的？
+
             // URP 核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
@@ -60,6 +65,7 @@ Shader "Custom/URP/URPBasic"
                 float4 positionCS : SV_POSITION; // 系统值语义，它告诉GPU：这是顶点最终坐标，必须写入 CS：Clip Space
                 float3 normalWS : TEXCOORD0; // 世界空间法线 TEXCOORD0是通用插值槽 通常用于传递自定义数据
                 float3 positionWS : TEXCOORD1; // 第二个通用插值槽
+                float4 shadowCoord : TEXCOORD2;
             };
 
             // 常量缓冲区 与Property一一对应
@@ -85,6 +91,9 @@ Shader "Custom/URP/URPBasic"
                 // 法线转世界空间
                 o.normalWS = TransformObjectToWorldNormal(v.normalOS);
 
+                // 计算当前顶点在光坐标系下的值
+                o.shadowCoord = TransformWorldToShadowCoord(o.positionWS);
+
                 return o;
             }
 
@@ -94,7 +103,10 @@ Shader "Custom/URP/URPBasic"
                 float3 N = normalize(i.normalWS);
 
                 // 获取主光
-                Light mainLight = GetMainLight();
+                Light mainLight = GetMainLight(i.shadowCoord);
+
+                // 获取阴影衰减
+                float shadow = mainLight.shadowAttenuation;
 
                 float3 L = normalize(mainLight.direction); // 物体指向光源的向量
                 float3 lightColor = mainLight.color;
@@ -105,7 +117,7 @@ Shader "Custom/URP/URPBasic"
                 // ==== Lambert漫反射 ====
                 // Lambert公式：最终颜色 = 主颜色 * 光颜色 * max(0, 单位法向 * 单位光方向);
                 float NdotL = max(0, dot(N, L));
-                float3 diffuse = _BaseColor.rgb * lightColor * NdotL;
+                float3 diffuse = _BaseColor.rgb * lightColor * NdotL * shadow; // 应用阴影到漫反射
 
                 // ==== Blinn-Phong高光 ====
                 // Blinn-Phone公式：高光强度 = pow(saturate(dot(N, H), _Shininess))
@@ -114,7 +126,7 @@ Shader "Custom/URP/URPBasic"
                 float NdotH = max(0, dot(N, H));
                 float spec = pow(NdotH, _Shininess);
 
-                float3 specular = _SpecColor.rgb * lightColor * spec;
+                float3 specular = _SpecColor.rgb * lightColor * spec * shadow; // 应用阴影到高光
 
                 // ==== 边缘光 ====
                 // 边缘光公式：边缘光强度 = (1 - dot(N, V)) ^ _RimPower
@@ -127,7 +139,7 @@ Shader "Custom/URP/URPBasic"
                 // 暗面权重 = 1 - max(0, N * L)
                 // 最终颜色 = rimColor * 暗面权重
                 float darkMask = 1 - NdotL;
-                rimColor = rimColor * darkMask;
+                rimColor = rimColor * darkMask * shadow; // 应用阴影到边缘光
 
                 // 计算环境光
                 // SH：是Spherical Harmonics（球谐函数）的缩写。可以把球面上的任意函数，用一组低频的基函数来近似表示。
