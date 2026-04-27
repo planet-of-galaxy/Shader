@@ -43,6 +43,11 @@ Shader "Custom/URP/URPBasic"
             #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE // 远处的影子要不要变模糊一点来节省性能？
             #pragma multi_compile _ _SHADOWS_SOFT // 影子的边缘是硬的还是软的？
 
+            // 多光源必备宏
+            #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
+            #pragma multi_compile_fragment _ _FORWARD_PLUS // Forward+ 渲染路径（URP 12+/Unity 6）
+            #pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
+
             // URP 核心库
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
@@ -128,6 +133,36 @@ Shader "Custom/URP/URPBasic"
 
                 float3 specular = _SpecColor.rgb * lightColor * spec * shadow; // 应用阴影到高光
 
+                // 多光源叠加（兼容 Forward 和 Forward+ 路径）
+                // Forward+ 需要 InputData 来查找光源簇
+                InputData inputData = (InputData)0;
+                inputData.positionWS = i.positionWS;
+                inputData.normalizedScreenSpaceUV = GetNormalizedScreenSpaceUV(i.positionCS);
+
+                uint pixelLightCount = GetAdditionalLightsCount();
+                LIGHT_LOOP_BEGIN(pixelLightCount)
+                {
+                    Light light = GetAdditionalLight(lightIndex, i.positionWS);
+
+                    float3 L_add = normalize(light.direction);
+                    float3 lightColor_add = light.color;
+                    float atten = light.distanceAttenuation * light.shadowAttenuation;
+
+                    float NdotL_add = max(0, dot(N, L_add));
+
+                    // 计算叠加光的漫反射
+                    float3 diffuse_add = _BaseColor.rgb * lightColor_add * NdotL_add * atten;
+                    diffuse += diffuse_add;
+
+                    // 计算高光叠加光
+                    float3 H_add = normalize(L_add + V);
+                    float NdotH_add = max(0, dot(N, H_add));
+                    float spec_add = pow(NdotH_add, _Shininess);
+                    float3 specular_add = _SpecColor.rgb * lightColor_add * spec_add * atten;
+                    specular += specular_add;
+                }
+                LIGHT_LOOP_END
+
                 // ==== 边缘光 ====
                 // 边缘光公式：边缘光强度 = (1 - dot(N, V)) ^ _RimPower
                 // 最终颜色 = 边缘光颜色 * 边缘光强度
@@ -136,7 +171,7 @@ Shader "Custom/URP/URPBasic"
 
                 // ==== 边缘光mask ====
                 // 让边缘光只在暗面出现
-                // 暗面权重 = 1 - max(0, N * L)
+                // 暗面权重 = 1 - max(0, dot(N, L))
                 // 最终颜色 = rimColor * 暗面权重
                 float darkMask = 1 - NdotL;
                 rimColor = rimColor * darkMask * shadow; // 应用阴影到边缘光
